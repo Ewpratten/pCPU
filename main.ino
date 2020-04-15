@@ -17,6 +17,7 @@
 #define NIBBLE_SELECT 5
 #define ACTION_BUTTON 4
 #define MODE_SEL A0
+#define RESET A1
 
 bool last_ab = false;
 
@@ -25,6 +26,9 @@ bool last_ab = false;
 #define OUT_DISP_2 16
 #define OUT_DISP_3 14
 #define OUT_DISP_4 15
+
+// Tone Output
+#define OUT_TONE 3
 
 // Cycle type
 // If false, read inputs
@@ -37,6 +41,7 @@ bool cycle_type = false;
 
 int mode = PGRM;
 bool debug_display = true;
+bool sys_halt = false;
 
 // Memory
 #define MEM_SIZE 512
@@ -72,6 +77,8 @@ int system_registers[4];
 // System calls
 #define SYSCALL_HALT 128 // 1000 0000
 #define SYSCALL_DISP 64  // 0100 0000
+#define SYSCALL_TONE 192 // 1100 0000
+#define SYSCALL_BELL 32  // 0010 0000
 
 typedef struct Variable {
   int type;
@@ -128,7 +135,7 @@ void ins_mov() {
 
   // Determine if the dest is a register or not
   if (dest.type == DATTYPE_REG) {
-    system_registers[dest.raw_val] = val.val; 
+    system_registers[dest.raw_val] = val.val;
   } else {
     system_memory[dest.raw_val] = val.val;
   }
@@ -158,7 +165,7 @@ void ins_sub() {
   // Read source b
   Variable b = processVar();
 
-  // Add
+  // Addmem_ptr++;
   int result = a.val - b.val;
 
   // Write result to the first register
@@ -208,6 +215,41 @@ void call_disp() {
 
 }
 
+void call_tone() {
+
+  // Read the stored frequency
+  int sto = system_registers[0];
+
+  // Mul to get a hearable frequency
+  sto *= 10;
+
+  // If sto is 0, kill the tone
+  if (sto == 0) {
+    noTone(OUT_TONE);
+  } else {
+    tone(OUT_TONE, sto);
+  }
+
+}
+
+void call_bell() {
+
+  // Read the stored frequency
+  int sto = system_registers[0];
+
+  // Mul to get a hearable frequency
+  sto *= 10;
+
+  // If no frequency is set, use default
+  if(sto == 0){
+    sto = 1000;
+  }
+
+  // Play bell tone
+  tone(OUT_TONE, sto, 250);
+
+}
+
 void ins_call() {
 
   // Read subroutuine number
@@ -216,6 +258,12 @@ void ins_call() {
   // Handle the appropriate subroutuine
   if (srn.val == SYSCALL_DISP) {
     call_disp();
+  } else if (srn.val == SYSCALL_HALT) {
+    sys_halt  = true;
+  } else if (srn.val == SYSCALL_TONE) {
+    call_tone();
+  } else if (srn.val == SYSCALL_BELL){
+    call_bell();
   }
 
 }
@@ -238,9 +286,20 @@ void ins_cmp() {
   Variable b = processVar();
 
   // If the two are not equal, we skip the next instruction
-  if(a.val != b.val){
+  if (a.val != b.val) {
+    int ins = system_memory[mem_ptr];
     mem_ptr++;
+
+    // If this is a single arg call, only grab 1 arg
+    if ( ins == INS_CALL || ins == INS_JMP ) {
+      processVar();
+    } else {
+      processVar();
+      processVar();
+    }
+
   }
+
 }
 
 void ins_cmpl() {
@@ -252,8 +311,17 @@ void ins_cmpl() {
   Variable b = processVar();
 
   // If the two are not lt, we skip the next instruction
-  if(a.val >= b.val){
+  if (a.val >= b.val) {
+    int ins = system_memory[mem_ptr];
     mem_ptr++;
+
+    // If this is a single arg call, only grab 1 arg
+    if ( ins == INS_CALL || ins == INS_JMP ) {
+      processVar();
+    } else {
+      processVar();
+      processVar();
+    }
   }
 }
 
@@ -266,8 +334,17 @@ void ins_cmpg() {
   Variable b = processVar();
 
   // If the two are not gt, we skip the next instruction
-  if(a.val <= b.val){
+  if (a.val <= b.val) {
+    int ins = system_memory[mem_ptr];
     mem_ptr++;
+
+    // If this is a single arg call, only grab 1 arg
+    if ( ins == INS_CALL || ins == INS_JMP ) {
+      processVar();
+    } else {
+      processVar();
+      processVar();
+    }
   }
 }
 
@@ -280,8 +357,17 @@ void ins_ncmp() {
   Variable b = processVar();
 
   // If the two are equal, we skip the next instruction
-  if(a.val == b.val){
+  if (a.val == b.val) {
+    int ins = system_memory[mem_ptr];
     mem_ptr++;
+
+    // If this is a single arg call, only grab 1 arg
+    if ( ins == INS_CALL || ins == INS_JMP ) {
+      processVar();
+    } else {
+      processVar();
+      processVar();
+    }
   }
 }
 
@@ -298,12 +384,14 @@ void setup() {
   pinMode(NIBBLE_SELECT, INPUT);
   pinMode(ACTION_BUTTON, INPUT);
   pinMode(MODE_SEL, INPUT);
+  pinMode(RESET, INPUT);
 
   pinMode(OUT_DISP_1, OUTPUT);
   pinMode(OUT_DISP_2, OUTPUT);
   pinMode(OUT_DISP_3, OUTPUT);
   pinMode(OUT_DISP_4, OUTPUT);
 
+  pinMode(OUT_TONE, OUTPUT);
 
   Serial.begin(9600);
 }
@@ -421,6 +509,14 @@ void handleInput() {
   Serial.print(mem_ptr, BIN);
   Serial.print(" ");
   Serial.print(system_memory[mem_ptr], BIN);
+  Serial.print(" ");
+  Serial.print(system_registers[0], BIN);
+  Serial.print(" ");
+  Serial.print(system_registers[1], BIN);
+  Serial.print(" ");
+  Serial.print(system_registers[2], BIN);
+  Serial.print(" ");
+  Serial.print(system_registers[3], BIN);
   Serial.print("\n");
 
 }
@@ -456,20 +552,28 @@ void handleOutput() {
 
 void handleLogic() {
 
+  // Halt if the mem_ptr outgrows the memory size
+  if (mem_ptr >= MEM_SIZE) {
+    sys_halt = true;
+  }
+
   // Read mode type
   if (digitalRead(MODE_SEL)) {
     if (mode == RUN) {
       // Reset the pointer
       mem_ptr = MEM_PGRM_START;
+      sys_halt = false;
 
       // Enable debug display
       debug_display = true;
+
     }
     mode = PGRM;
   } else {
     if (mode != RUN) {
       // Reset the pointer
       mem_ptr = MEM_PGRM_START;
+      sys_halt = false;
 
       // Enable debug display
       debug_display = true;
@@ -477,7 +581,7 @@ void handleLogic() {
     mode = RUN;
   }
 
-  if (mode == RUN) {
+  if (mode == RUN && !sys_halt) {
 
     // Read the current instruction
     int ins = system_memory[mem_ptr];
@@ -510,9 +614,16 @@ void handleLogic() {
 
   }
 
+  delay(100);
+
 }
 
 void loop() {
+
+  if (digitalRead(RESET)) {
+    memset(system_memory, 0, MEM_SIZE);
+    memset(system_registers, 0, 4);
+  }
 
   // Handle read vs write
   if (cycle_type) {

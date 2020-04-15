@@ -47,9 +47,11 @@ def pt(v, d):
     print()
 
 
-print("Assembled program")
+print(f"Assembled program {sys.argv[1]}")
 print(" Mem Addr #  Mem Val  # Instruction")
 for line in file:
+    if line[0] == ":":
+        continue
     pts = line.split(" ")
     
     for i,c in enumerate(pts):
