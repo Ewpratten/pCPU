@@ -46,12 +46,24 @@ def pt(v, d):
     print(d, end="")
     print()
 
+labels = {}
 
 print(f"Assembled program {sys.argv[1]}")
 print(" Mem Addr #  Mem Val  # Instruction")
-for line in file:
+for line in file:    
+    if len(line) == 0:
+        continue
+    
     if line[0] == ":":
         continue
+    
+    if line[0] == "~":
+        labels[line[1:]] = m_ptr
+        continue
+    
+    if m_ptr >= 512:
+        print("!", end="")
+        
     pts = line.split(" ")
     
     for i,c in enumerate(pts):
@@ -69,9 +81,16 @@ for line in file:
                 dattype += c[1]
                 ofs = 2
             
+            if dattype == "~":
+                label = c[1:]
+                dattype = "%"
+                number = labels[label]
+            else:
+                number = int(c[ofs:])
+            
             pt(dt[dattype], dattype)
             
-            number = int(c[ofs:])
+            
             
             if number > 255:
                 pt((number >> 8) & 0xff, number)
